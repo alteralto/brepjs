@@ -5,7 +5,7 @@
  * and return Result values.
  */
 
-import { getKernel } from '@/kernel/index.js';
+import { getKernel, getKernelCapabilities } from '@/kernel/index.js';
 import type { Edge, Face, Shell, Solid, Shape3D, AnyShape, Dimension } from '@/core/shapeTypes.js';
 import type { ValidSolid } from '@/core/validityTypes.js';
 import { castResultShape, disposeResultShape, isShape3D, isSolid } from '@/core/shapeTypes.js';
@@ -14,7 +14,9 @@ import { type Result, type Err, ok, err, isErr } from '@/core/result.js';
 import type { BrepError } from '@/core/errors.js';
 import { kernelError, validationError, BrepErrorCode } from '@/core/errors.js';
 import { getEdges } from './shapeFns.js';
+import { subShapeHashes } from './topologyQueryFns.js';
 import { collectInputFaceHashes, propagateAllMetadata } from './metadata/metadataPropagation.js';
+import { checkThickResult, type ThickResultSpec } from './thickResultCheck.js';
 import type { Vec3 } from '@/core/types.js';
 import type { DraftAngle } from './apiTypes.js';
 import type { KernelShape, ShapeEvolution } from '@/kernel/types.js';
@@ -396,6 +398,36 @@ export function chamfer(
 // Shell
 // ---------------------------------------------------------------------------
 
+function acceptThickResult(
+  input: ValidSolid,
+  cast: AnyShape,
+  evolution: ShapeEvolution | undefined,
+  spec: ThickResultSpec,
+  propagateMetadata = true
+): Result<ValidSolid> {
+  let checked: Result<undefined>;
+  try {
+    if (isShape3D(cast) || getKernel().isNull(cast.wrapped)) {
+      checked = checkThickResult(input, cast as Shape3D, evolution, spec);
+    } else {
+      checked = err(
+        spec.operation === 'shell'
+          ? kernelError('SHELL_RESULT_NOT_3D', 'Shell result is not a 3D shape')
+          : kernelError('OFFSET_RESULT_NOT_3D', 'Offset result is not a 3D shape')
+      );
+    }
+  } catch (e) {
+    disposeResultShape(cast);
+    throw e;
+  }
+  if (isErr(checked)) {
+    disposeResultShape(cast);
+    return checked;
+  }
+  if (evolution && propagateMetadata) propagateAllMetadata(evolution, [input], cast);
+  return ok(cast as ValidSolid);
+}
+
 /**
  * Create a hollow shell by removing faces and offsetting remaining walls.
  *
@@ -403,6 +435,9 @@ export function chamfer(
  * @param faces - Faces to remove.
  * @param thickness - Wall thickness.
  * @param tolerance - Shell operation tolerance (default 1e-3).
+ * @returns Err `SHELL_NO_EFFECT` when the wall is too thick and the kernel
+ *   hands back the input, `SHELL_INVALID_RESULT` when the result is not a
+ *   usable hollow body.
  */
 export function shell(
   shape: ValidSolid,
@@ -420,38 +455,35 @@ export function shell(
     return err(validationError('NO_FACES', 'At least one face must be specified for shell'));
   }
 
+  const kernel = getKernel();
+  const spec: ThickResultSpec = {
+    operation: 'shell',
+    distance: -thickness,
+    tolerance,
+    openedFaceHashes: new Set(faces.map((f) => kernel.hashCode(f.wrapped, HASH_CODE_MAX))),
+  };
   try {
-    if (!trackEvolution) {
-      const resultShape = getKernel().shell(
+    // With native history the wall check needs the evolution even when the
+    // caller opted out of metadata tracking.
+    if (!trackEvolution && getKernelCapabilities().nativeHistory !== true) {
+      const resultShape = kernel.shell(
         shape.wrapped,
         faces.map((f) => f.wrapped),
         thickness,
         tolerance
       );
-      const cast = castResultShape(resultShape);
-      if (!isShape3D(cast)) {
-        disposeResultShape(cast);
-        return err(kernelError('SHELL_RESULT_NOT_3D', 'Shell result is not a 3D shape'));
-      }
-      return ok(cast as ValidSolid);
+      return acceptThickResult(shape, castResultShape(resultShape), undefined, spec);
     }
 
-    const inputFaceHashes = collectInputFaceHashes([shape]);
-    const { shape: resultShape, evolution } = getKernel().shellWithHistory(
+    const { shape: resultShape, evolution } = kernel.shellWithHistory(
       shape.wrapped,
       faces.map((f) => f.wrapped),
       thickness,
-      inputFaceHashes,
+      subShapeHashes(shape, 'face'),
       HASH_CODE_MAX,
       tolerance
     );
-    const cast = castResultShape(resultShape);
-    if (!isShape3D(cast)) {
-      disposeResultShape(cast);
-      return err(kernelError('SHELL_RESULT_NOT_3D', 'Shell result is not a 3D shape'));
-    }
-    propagateAllMetadata(evolution, [shape], cast);
-    return ok(cast as ValidSolid);
+    return acceptThickResult(shape, castResultShape(resultShape), evolution, spec, trackEvolution);
   } catch (e) {
     const raw = e instanceof Error ? e.message : String(e);
     return err(
@@ -474,6 +506,8 @@ export function shell(
  * @param shape - The shape to offset (must be a 3D shape with faces).
  * @param distance - Offset distance (positive = outward, negative = inward).
  * @param tolerance - Offset tolerance (default 1e-6).
+ * @returns Err `OFFSET_INVALID_RESULT` when the offset consumes the body or
+ *   gives no usable solid.
  */
 export function offset(shape: ValidSolid, distance: number, tolerance = 1e-6): Result<ValidSolid> {
   const check = validateNotNull(shape, 'offset: shape');
@@ -483,21 +517,18 @@ export function offset(shape: ValidSolid, distance: number, tolerance = 1e-6): R
   }
 
   try {
-    const inputFaceHashes = collectInputFaceHashes([shape]);
     const { shape: resultShape, evolution } = getKernel().offsetWithHistory(
       shape.wrapped,
       distance,
-      inputFaceHashes,
+      subShapeHashes(shape, 'face'),
       HASH_CODE_MAX,
       tolerance
     );
-    const cast = castResultShape(resultShape);
-    if (!isShape3D(cast)) {
-      disposeResultShape(cast);
-      return err(kernelError('OFFSET_RESULT_NOT_3D', 'Offset result is not a 3D shape'));
-    }
-    propagateAllMetadata(evolution, [shape], cast);
-    return ok(cast as ValidSolid);
+    return acceptThickResult(shape, castResultShape(resultShape), evolution, {
+      operation: 'offset',
+      distance,
+      tolerance,
+    });
   } catch (e) {
     const raw = e instanceof Error ? e.message : String(e);
     return err(kernelError('OFFSET_FAILED', `Offset operation failed: ${raw}`, e));
