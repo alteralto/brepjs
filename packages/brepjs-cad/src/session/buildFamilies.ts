@@ -1,9 +1,13 @@
 import type { AnyShape } from 'brepjs';
+import type { PreviewModelPayload } from 'brepjs-viewer';
 import {
+  familiesNodes,
   importFamilies,
   isFamiliesTree,
   isResolvedElementLike,
   loadModelValue,
+  previewBuildOf,
+  previewTree,
   type FamiliesEvaluatedNode,
   type ResolvedElementLike,
 } from '../preview/evaluate.js';
@@ -28,6 +32,8 @@ const MAX_UNKEYED_EXAMPLES = 5;
 export interface WorkerBuild {
   readonly outcome: BuildOutcome;
   dispose(): void;
+  /** The merged render payload, keyed by record id; built on first use. Successful builds only. */
+  payload?(): PreviewModelPayload;
 }
 
 const NOTHING_TO_DISPOSE = (): void => {};
@@ -89,12 +95,18 @@ export async function buildFamilies(
     const model = fam.evaluateModel(resolved, evaluator, {}, { shapes: true });
     const diagnostics: BuildDiagnostic[] = [];
     const elements = toRecords(brep, resolved, model.byKeyPath, diagnostics);
+    let payload: PreviewModelPayload | undefined;
     return {
       outcome: {
         ok: true,
         summary: { kind: 'families', units: 'mm', root: resolved.keyPath, elements, diagnostics },
       },
       dispose: () => evaluator[Symbol.dispose](),
+      payload: () =>
+        (payload ??= previewBuildOf(
+          familiesNodes(brep, model.byKeyPath),
+          previewTree(resolved)
+        ).payload),
     };
   } catch (e) {
     evaluator[Symbol.dispose]();
@@ -144,9 +156,11 @@ function toRecords(
     let bounds: ElementRecord['bounds'];
     let volume: number | undefined;
     let geometryError: string | undefined;
+    let renderable = false;
     if (hasGeometry) {
       const node = byKeyPath.get(n.keyPath);
       const mesh = node?.mesh.ok ? node.mesh.value : undefined;
+      renderable = mesh !== undefined;
       if (mesh) bounds = boundsOfPositions(mesh.vertices);
       else geometryError = errorMessage(node?.mesh.error ?? 'element has no evaluated mesh');
       const shape = node?.shape?.ok ? node.shape.value : undefined;
@@ -179,6 +193,7 @@ function toRecords(
       classification: jsonSafe(n.attributes['classification']),
       relationships: (n.relationships ?? []).map((r) => ({ kind: r.kind, target: r.target })),
       hasGeometry,
+      renderable,
       ...(n.geometry.structuralHash !== undefined
         ? { geometryHash: n.geometry.structuralHash.toString(16) }
         : {}),

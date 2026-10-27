@@ -6,6 +6,7 @@
 
 import { basename } from 'node:path';
 import type {
+  CallToolResult,
   ReadResourceResult,
   Resource,
   ResourceTemplate,
@@ -21,6 +22,8 @@ import {
 } from '../session/query.js';
 import type { BuildDiff } from '../session/diff.js';
 import type { BuildDiagnostic } from '../session/records.js';
+import type { RenderSection, RenderShot, RenderView } from '../session/render.js';
+import { COLOR_BY, planStyle, storeyPlan, type ColorBy } from '../session/style.js';
 import { SessionError } from '../session/sessions.js';
 import type { Session, SessionManager } from '../session/sessions.js';
 import {
@@ -36,6 +39,10 @@ import {
 } from './registry.js';
 
 const MAX_TIMEOUT_MS = 600_000;
+const RENDER_TIMEOUT_MS = 120_000;
+const RENDER_VIEWS: readonly RenderView[] = ['iso', 'front', 'top', 'right'];
+const VIEW_MODES = ['solid', 'wireframe', 'xray'] as const;
+const MAX_SELECTION = 500;
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 1000;
 const MAX_IDS = 200;
@@ -125,6 +132,71 @@ function parseFields(raw: string[] | undefined): ReadonlySet<FieldGroup> {
     }
   }
   return new Set(raw as FieldGroup[]);
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function oneOf<T extends string>(
+  a: Record<string, unknown>,
+  key: string,
+  allowed: readonly T[]
+): T | undefined {
+  const v = a[key];
+  if (v === undefined) return undefined;
+  if (typeof v !== 'string' || !(allowed as readonly string[]).includes(v)) {
+    throw new ArgError(`"${key}" must be one of ${allowed.join(', ')}`);
+  }
+  return v as T;
+}
+
+function parseViews(raw: unknown): RenderView[] {
+  if (raw === undefined) return ['iso'];
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > RENDER_VIEWS.length) {
+    throw new ArgError(
+      `"views" must list 1 to ${RENDER_VIEWS.length} of ${RENDER_VIEWS.join(', ')}`
+    );
+  }
+  return raw.map((v) => {
+    if (typeof v !== 'string' || !(RENDER_VIEWS as readonly string[]).includes(v)) {
+      throw new ArgError(`unknown view '${String(v)}' (expected ${RENDER_VIEWS.join(', ')})`);
+    }
+    return v as RenderView;
+  });
+}
+
+function parseSection(raw: unknown): RenderSection | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) throw new ArgError('"section" must be an object');
+  const axis = oneOf(raw, 'axis', ['x', 'y', 'z'] as const);
+  const at = raw['at'];
+  if (axis === undefined || typeof at !== 'number' || !Number.isFinite(at)) {
+    throw new ArgError('"section" needs an axis (x, y, z) and a position "at" in mm');
+  }
+  return { axis, at, keep: oneOf(raw, 'keep', ['below', 'above'] as const) ?? 'below' };
+}
+
+function parsePlan(raw: unknown): { storey: string; cutHeight?: number } | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw) || typeof raw['storey'] !== 'string') {
+    throw new ArgError('"plan" needs a storey id or name');
+  }
+  const cutHeight = optionalPositive(raw, 'cutHeight', Number.MAX_VALUE);
+  return { storey: raw['storey'], ...(cutHeight !== undefined ? { cutHeight } : {}) };
+}
+
+function imageResult(digest: unknown, pngs: readonly Uint8Array[]): CallToolResult {
+  return {
+    content: [
+      { type: 'text', text: JSON.stringify(digest) },
+      ...pngs.map((png) => ({
+        type: 'image' as const,
+        data: Buffer.from(png).toString('base64'),
+        mimeType: 'image/png',
+      })),
+    ],
+  };
 }
 
 export function sessionTools(sessions: SessionManager): ToolDef[] {
@@ -286,6 +358,132 @@ export function sessionTools(sessions: SessionManager): ToolDef[] {
           previousBuildHash: s.lastDiff.previousBuildHash,
           diff: diffPage(s.lastDiff.diff, optionalCount(a, 'offset') ?? 0, limit),
         });
+      },
+    },
+    {
+      name: 'render_view',
+      title: 'Render view',
+      description:
+        "Render a session's current build to 1200 x 900 PNGs, returned as images after a short text digest. highlight draws the given elements solid in orange and ghosts the rest; isolate draws only the given elements; both take ids or globs, and a container (a storey, a composed family) stands for the elements under it. colorBy colors what is drawn by category, storey or family and returns the legend. plan draws one storey from above, cut 1200 mm (or cutHeight) above its floor. After a rebuild, render with highlight set to the changed ids to check the edit by eye.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sessionId: SESSION_ID,
+          expectBuild: EXPECT_BUILD,
+          views: {
+            type: 'array',
+            items: { type: 'string', enum: [...RENDER_VIEWS] },
+            description: 'Camera views, one image each (default ["iso"]). Ignored with plan.',
+          },
+          viewMode: { type: 'string', enum: [...VIEW_MODES], description: 'Default solid.' },
+          highlight: {
+            type: 'array',
+            items: { type: 'string' },
+            description: `Up to ${MAX_SELECTION} ids or globs.`,
+          },
+          isolate: {
+            type: 'array',
+            items: { type: 'string' },
+            description: `Up to ${MAX_SELECTION} ids or globs.`,
+          },
+          colorBy: { type: 'string', enum: [...COLOR_BY] },
+          plan: {
+            type: 'object',
+            description:
+              'A storey plan: the storey id or name, and the cut height above its floor in mm.',
+            properties: { storey: { type: 'string' }, cutHeight: { type: 'number' } },
+            required: ['storey'],
+          },
+          section: {
+            type: 'object',
+            description:
+              'A cut at "at" mm along axis; keep picks the lower (below, default) or higher side.',
+            properties: {
+              axis: { type: 'string', enum: ['x', 'y', 'z'] },
+              at: { type: 'number' },
+              keep: { type: 'string', enum: ['below', 'above'] },
+            },
+            required: ['axis', 'at'],
+          },
+          dims: {
+            type: 'boolean',
+            description: "Burn the drawn elements' size into the image (default true).",
+          },
+          timeoutMs: {
+            type: 'number',
+            description: `Render budget in ms (default ${RENDER_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}).`,
+          },
+        },
+        required: ['sessionId'],
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      handler: async (a) => {
+        const sessionId = requireString(a, 'sessionId');
+        const expectBuild = optionalString(a, 'expectBuild');
+        const views = parseViews(a['views']);
+        const requestedSection = parseSection(a['section']);
+        const planArg = parsePlan(a['plan']);
+        const highlight = stringArray(a, 'highlight', MAX_SELECTION);
+        const isolate = stringArray(a, 'isolate', MAX_SELECTION);
+        const colorBy = oneOf<ColorBy>(a, 'colorBy', COLOR_BY);
+        const viewMode = oneOf(a, 'viewMode', VIEW_MODES);
+        const dims = optionalBoolean(a, 'dims') ?? true;
+        const timeoutMs = optionalPositive(a, 'timeoutMs', MAX_TIMEOUT_MS) ?? RENDER_TIMEOUT_MS;
+        // Everything that reads the build runs inside the session queue, against the build drawn.
+        const result = await sessions.render(sessionId, { timeoutMs, expectBuild }, (s) => {
+          const records = s.build.summary.elements;
+          let shotViews = views;
+          let section = requestedSection;
+          let scope: ReadonlySet<string> | undefined;
+          let planInfo: Record<string, unknown> | undefined;
+          if (planArg) {
+            const plan = storeyPlan(records, planArg.storey, planArg.cutHeight);
+            if (plan === undefined) {
+              const storeys = records.filter((r) => r.category.toLowerCase() === 'storey');
+              throw new ArgError(
+                `no storey '${planArg.storey}' (storeys: ${storeys.map((r) => r.name ?? r.id).join(', ') || 'none'})`
+              );
+            }
+            shotViews = ['top'];
+            section ??= plan.section;
+            scope = plan.members;
+            planInfo = { storey: plan.storey.id, cutAt: plan.section.at };
+          }
+          const style = planStyle(records, { highlight, isolate, colorBy, scope });
+          const digest = {
+            sessionId: s.id,
+            buildHash: s.build.buildHash,
+            views: shotViews,
+            drawn: style.drawn,
+            highlighted: style.highlighted,
+            ...(style.legend.length > 0 ? { legend: style.legend } : {}),
+            ...(style.unmatched.length > 0 ? { unmatched: style.unmatched } : {}),
+            ...(planInfo ? { plan: planInfo } : {}),
+            ...(section ? { section } : {}),
+          };
+          if (style.drawn === 0) return { meta: digest };
+          const shots: RenderShot[] = shotViews.map((view) => ({
+            view,
+            ...(viewMode !== undefined ? { viewMode } : {}),
+            ...(section !== undefined ? { section } : {}),
+            ...(planInfo ? { projection: 'orthographic' as const } : {}),
+          }));
+          return {
+            request: { shots, ...(style.style ? { style: style.style } : {}), dims },
+            meta: digest,
+          };
+        });
+        if (result.pngs === undefined) {
+          return jsonResult(
+            {
+              error: 'NOTHING_TO_DRAW',
+              message: 'the selection leaves no element with drawable geometry',
+              ...result.meta,
+            },
+            true
+          );
+        }
+        return imageResult(result.meta, result.pngs);
       },
     },
     {
