@@ -19,11 +19,14 @@ import type { RenderRequest, ShotCamera } from './render.js';
 import type { DrawingArgs, DrawingOutcome } from './protocol.js';
 import type { SpaceGeometry } from './spaces.js';
 import type { CobieArgs, CobieOutcome } from './cobie.js';
+import type { ElementStyle } from 'brepjs-viewer';
+import type { PreviewServer } from '../preview/server.js';
 import { sourceSetOf, type SourceSet } from './sources.js';
 import { SessionWorker, WorkerError } from './workerClient.js';
 
 export const DEFAULT_BUILD_TIMEOUT_MS = 120_000;
 export const DEFAULT_MAX_SESSIONS = 4;
+const PAYLOAD_TIMEOUT_MS = 120_000;
 
 const PROGRAM_EXT = new Set(['.ts', '.tsx', '.mts', '.js', '.mjs']);
 
@@ -45,6 +48,52 @@ export interface Build {
   /** Hash of the element records: equal hashes mean an identical build. */
   readonly buildHash: string;
   readonly builtAt: Date;
+}
+
+/**
+ * What the live viewer shows and what its user picked. The agent's select_elements and
+ * show_elements bump `rev`; an open viewer polls for a newer rev and reports clicks back.
+ */
+export interface ViewerState {
+  rev: number;
+  selection: readonly string[];
+  selectedAt: Date | undefined;
+  /** Elements to frame the camera on. */
+  frame: readonly string[] | undefined;
+  /** Bumped by each show_elements, so asking for the same frame again refits the camera. */
+  frameSeq: number;
+  style: ElementStyle | undefined;
+  /** When an open viewer last checked in. */
+  seenAt: Date | undefined;
+  /** The local page show_model links when the client can't show the viewer inline. */
+  fallback: PreviewServer | undefined;
+}
+
+/** What a browser preview page needs to match the inline viewer: style, selection, framing. */
+export function viewerScene(v: ViewerState): Record<string, unknown> {
+  return {
+    ...(v.style ? { style: v.style } : {}),
+    selection: v.selection,
+    ...(v.frame ? { frame: v.frame } : {}),
+  };
+}
+
+/** Drop ids a rebuild removed, so the viewer never selects, frames or isolates nothing. */
+function reconcileViewer(v: ViewerState, index: ReadonlyMap<string, unknown>): void {
+  const known = (ids: readonly string[]): string[] => ids.filter((id) => index.has(id));
+  v.selection = known(v.selection);
+  if (v.frame) {
+    const frame = known(v.frame);
+    v.frame = frame.length > 0 ? frame : undefined;
+  }
+  if (v.style) {
+    const layers = v.style.layers
+      .map((l) => ({ ...l, keyPaths: known(l.keyPaths) }))
+      .filter((l) => l.keyPaths.length > 0);
+    v.style =
+      layers.length === 0 && v.style.others === 'hidden' ? undefined : { ...v.style, layers };
+  }
+  v.rev++;
 }
 
 export interface Session {
@@ -73,6 +122,7 @@ export interface Session {
     | { readonly buildHash: string; readonly checks: string; readonly outcome: ValidateOutcome }
     | undefined;
   lastFailure: { readonly at: Date; readonly diagnostics: readonly BuildDiagnostic[] } | undefined;
+  readonly viewer: ViewerState;
   queue: Promise<unknown>;
 }
 
@@ -238,6 +288,16 @@ export class SessionManager {
       quantityCache: undefined,
       validationCache: undefined,
       lastFailure: undefined,
+      viewer: {
+        rev: 0,
+        selection: [],
+        selectedAt: undefined,
+        frame: undefined,
+        frameSeq: 0,
+        style: undefined,
+        seenAt: undefined,
+        fallback: undefined,
+      },
       queue: Promise.resolve(),
     };
     this.#sessions.set(session.id, session);
@@ -333,6 +393,20 @@ export class SessionManager {
       session.validationCache = undefined;
       session.lastDiff = { previousBuildHash: previous.buildHash, diff };
       session.lastFailure = undefined;
+      reconcileViewer(session.viewer, attempt.build.index);
+      // A browser page show_model linked reloads on its own once it has the new model.
+      const page = session.viewer.fallback;
+      if (page) {
+        page.setScene(viewerScene(session.viewer));
+        try {
+          const bytes = await this.#request(session, 'payload', {}, PAYLOAD_TIMEOUT_MS);
+          page.update(
+            bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+          );
+        } catch {
+          // The page keeps the last model; show_model sends it the new one.
+        }
+      }
       return {
         ok: true,
         session,
@@ -525,6 +599,25 @@ export class SessionManager {
     });
   }
 
+  /** The current build as an encoded preview payload, the bytes the viewer page decodes. */
+  payload(
+    id: string,
+    opts: { readonly timeoutMs: number; readonly expectBuild?: string | undefined }
+  ): Promise<{
+    readonly session: Session;
+    readonly buildHash: string;
+    readonly bytes: Uint8Array;
+  }> {
+    return this.#onCurrentBuild(id, opts.expectBuild, 'viewer payload', async (s) => {
+      const buildHash = s.build.buildHash;
+      return {
+        session: s,
+        buildHash,
+        bytes: await this.#request(s, 'payload', {}, opts.timeoutMs),
+      };
+    });
+  }
+
   /** Run agent code against the session's current build, in its worker. */
   evalCode(
     id: string,
@@ -610,6 +703,7 @@ export class SessionManager {
         drawing: 'DRAWING_FAILED',
         spaces: 'SPACES_FAILED',
         cobie: 'COBIE_FAILED',
+        payload: 'PAYLOAD_FAILED',
       };
       const code = codes[op];
       throw new SessionError(code, `${errorMessage(e)}${stopped}`);
@@ -620,12 +714,16 @@ export class SessionManager {
     const s = this.get(id);
     s.worker?.kill();
     s.building?.kill();
+    void s.viewer.fallback?.close();
     this.#sessions.delete(id);
     this.#onChange?.();
   }
 
   closeAll(): void {
-    for (const s of this.#sessions.values()) s.worker?.kill();
+    for (const s of this.#sessions.values()) {
+      s.worker?.kill();
+      void s.viewer.fallback?.close();
+    }
     for (const w of this.#inflight) w.kill();
     this.#epoch++;
     this.#sessions.clear();
