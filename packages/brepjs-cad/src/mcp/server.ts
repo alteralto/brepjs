@@ -26,7 +26,9 @@ installSandboxShutdownHandlers();
 const pkgPath = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json');
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version: string };
 
-const { server, sessions } = createBrepMcpServer(pkg.version);
+// --allow-code lists eval_in_session, which runs agent code with this server's permissions.
+const allowCode = process.argv.slice(2).includes('--allow-code');
+const { server, sessions } = createBrepMcpServer(pkg.version, {}, undefined, { allowCode });
 
 async function main(): Promise<void> {
   // The client closing stdin is the end of the session: stop every model worker with it.
