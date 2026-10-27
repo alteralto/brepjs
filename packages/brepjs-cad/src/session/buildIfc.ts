@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { previewBuildOf, tryMeshEdges } from '../preview/evaluate.js';
 import { initOcctWasm, loadBrep, type BrepNs } from '../verify/brepjsRuntime.js';
 import { importBim } from './bim.js';
+import { validateIfc } from './validate.js';
 import { baseEvalContext, type WorkerBuild } from './buildFamilies.js';
 import {
   errorMessage,
@@ -126,6 +127,7 @@ export async function buildIfc(ifcPath: string): Promise<WorkerBuild> {
     dispose: () => bim.disposeImportedModel(model),
     payload: () => (payload ??= previewBuildOf(ifcNodes(brep, model, idOf), null).payload),
     evalContext: () => ({ ...baseEvalContext(brep, 'ifc', elements), model }),
+    validate: (checks) => validateIfc(bim, bytes, model, idOf, new Set(checks)),
   };
 }
 
@@ -249,7 +251,10 @@ function splitPsets(psets: readonly ImportedPsetLike[]): {
 
 // fromIfc's per-element warnings for a Body that exists but did not (fully) reconstruct. An element
 // with no Body at all gets neither, so these are what separate failed geometry from absent geometry.
-const BODY_FAILURE_CODES = new Set(['BODY_RECONSTRUCTION_NONE', 'PARTIAL_BODY_RECONSTRUCTION']);
+export const BODY_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'BODY_RECONSTRUCTION_NONE',
+  'PARTIAL_BODY_RECONSTRUCTION',
+]);
 
 /** Element records for an imported model; exported for tests. */
 export function ifcRecords(
