@@ -1,6 +1,7 @@
 import type { AnyShape, BrepError, GltfMaterial, MaterialFn, Result, ShapeMesh } from 'brepjs';
+import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { loadBrep, initOcctWasm, toolDir } from './brepjsRuntime.js';
+import { loadBrep, initOcctWasm, toolDir, type BrepNs } from './brepjsRuntime.js';
 import { runChecks } from './checks.js';
 import {
   evaluateExpected,
@@ -165,6 +166,20 @@ function finalize(result: RunPartResult): RunPartResult {
   return result;
 }
 
+function solidsCoverShape(
+  brep: Pick<BrepNs, 'getFaces' | 'getEdges' | 'getVertices'>,
+  shape: AnyShape,
+  solids: readonly AnyShape[]
+): boolean {
+  const count = (get: (s: AnyShape) => readonly unknown[]) =>
+    solids.reduce((n, s) => n + get(s).length, 0) === get(shape).length;
+  return count(brep.getFaces) && count(brep.getEdges) && count(brep.getVertices);
+}
+
+function partName(modulePath: string): string {
+  return basename(modulePath).replace(/(\.brep)?\.(m?ts|tsx|m?js)$/, '');
+}
+
 export async function runPart(
   modulePath: string,
   opts: RunPartOptions = {}
@@ -190,7 +205,7 @@ export async function runPart(
     pushError(report, toErrorInfo('kernel init failed', e));
     return finalize({ shape: null, report });
   }
-  const { isOk, mesh, exportGlb, exportSTEP } = brep;
+  const { isOk, mesh, exportGlb, exportSTEP, exportSTEPConfigured, getSolids } = brep;
   let mod: { default?: unknown; expected?: unknown; materials?: unknown };
   try {
     mod = await loadPart(modulePath, opts.freshImport);
@@ -256,9 +271,28 @@ export async function runPart(
     }
   }
   if (opts.step) {
-    const r = exportSTEP(shape);
-    if (isOk(r)) step = await r.value.arrayBuffer();
-    else pushError(result, toErrorInfo('exportSTEP', r.error));
+    // Name the STEP products after the part file; unnamed, CAD tools list the model under
+    // OCCT's "Open CASCADE STEP translator" default. A multi-solid part exports one named
+    // product per solid: FreeCAD otherwise hands the file name to each solid and suffixes
+    // the container ("pi5-case002"). A project's older brepjs may lack the configured
+    // export, so fall back to the plain one.
+    if (typeof exportSTEPConfigured === 'function') {
+      const name = partName(modulePath);
+      const solids = getSolids(shape);
+      // Split only when the solids are the whole part: a free face, shell or wire alongside
+      // them would be dropped, so such a part exports whole under one name.
+      const parts =
+        solids.length > 1 && solidsCoverShape(brep, shape, solids)
+          ? solids.map((solid, i) => ({ shape: solid, name: `${name}-${i + 1}` }))
+          : [{ shape, name }];
+      const r = exportSTEPConfigured(parts);
+      if (isOk(r)) step = new TextEncoder().encode(r.value).buffer;
+      else pushError(result, toErrorInfo('exportSTEP', r.error));
+    } else {
+      const r = exportSTEP(shape);
+      if (isOk(r)) step = await r.value.arrayBuffer();
+      else pushError(result, toErrorInfo('exportSTEP', r.error));
+    }
   }
   return finalize({ shape, report: result, step, glb });
 }
