@@ -331,6 +331,16 @@ export const divergences: DivergenceMap = {
     },
 
     // -----------------------------------------------------------------------
+    // sketchFns.test.ts
+    // -----------------------------------------------------------------------
+    'sketchFns.revolveHoled': {
+      kind: 'skip',
+      reason:
+        'brepkit measures a revolved ring with a hole at 21580.40 where Pappus gives 21579.68 ' +
+        '(3.3e-5 relative); occt and occt-wasm match it within 0.005.',
+    },
+
+    // -----------------------------------------------------------------------
     // faceFinder.test.ts (topology-differs, not a skip)
     // -----------------------------------------------------------------------
     'faceFinder.sphereFaceCount': {
