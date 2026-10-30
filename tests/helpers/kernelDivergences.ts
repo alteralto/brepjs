@@ -101,6 +101,10 @@ export const divergences: DivergenceMap = {
       reason:
         'manifold sphere is a fixed-segment primitive — tolerance/angularTolerance do not change its facet count, so coarse and fine STL exports are identical.',
     },
+    'meshFns.igesExport': {
+      kind: 'not-implemented',
+      reason: 'manifold has no IGES writer: exportIGES returns UNSUPPORTED_CAPABILITY.',
+    },
     'extrudeFns.shellModeWires': {
       kind: 'not-implemented',
       reason:
@@ -181,6 +185,16 @@ export const divergences: DivergenceMap = {
       reason:
         'manifold rejects a per-edge radius callback ("fillet (per-edge radius callback) is not implemented") and treats an [r1, r2] pair as r1.',
     },
+    'modifierFns.perEdgeChamfers': {
+      kind: 'not-implemented',
+      reason:
+        'manifold rejects a per-edge distance callback ("fillet (per-edge radius callback) is not implemented").',
+    },
+    'modifierFns.asymmetricChamferVolume': {
+      kind: 'skip',
+      reason:
+        'manifold approximates a [1, 2] chamfer on a 10 mm cube edge at 973.31 mm3 against the exact 990.',
+    },
     'modifierFns.edgeTreatmentFailedEdges': {
       kind: 'not-implemented',
       reason:
@@ -196,6 +210,11 @@ export const divergences: DivergenceMap = {
       reason:
         'manifold has no per-edge distance-angle chamfer (no chamferDistAngles): chamfer returns UNSUPPORTED_CAPABILITY unless every edge takes the same { distance, angle }.',
     },
+    'chamferAngle.faceHistory': {
+      kind: 'not-implemented',
+      reason:
+        'manifold reports no face history for a distance-angle chamfer (no chamferDistAnglesWithHistory), so only face origins carry over, matched by hash and geometry; face tags and colors are lost.',
+    },
     'draftFns.neutralPlane': {
       kind: 'not-implemented',
       reason: 'manifold leaves a drafted box at its full 1000 mm3.',
@@ -207,20 +226,12 @@ export const divergences: DivergenceMap = {
   },
   brepkit: {
     // -----------------------------------------------------------------------
-    // csgPath.test.ts — direction probes need a faithful curvePointAt
+    // csgPath.test.ts: a clockwise ellipse arc keeps its curve's direction
     // -----------------------------------------------------------------------
-    'csgPath.orientationProbes': {
+    'csgPath.clockwiseEllipseArc': {
       kind: 'skip',
       reason:
-        'brepkit curvePointAt evaluates raw curve parameter space (not a normalized arc-length fraction), so midpoint/endpoint direction oracles read wrong positions. Surfaced in the Path node work (#2032).',
-    },
-    // -----------------------------------------------------------------------
-    // booleanFns.test.ts — brepkit fuse ignores BooleanOptions (incl. simplify)
-    // -----------------------------------------------------------------------
-    'booleanFns.pairwiseSimplifyFaceMerge': {
-      kind: 'skip',
-      reason:
-        'brepkit fuse warns and ignores BooleanOptions (optimisation/simplify/strategy/fuzzyValue); only the occt (opencascade.js) kernel applies SimplifyResult, so the fused solid face count is unchanged by simplify:true.',
+        'A clockwise ellipseArcTo path segment is a B-spline edge that runs from the end of the segment to its start: curveStartPoint of the [30, 0] -> [-30, 0] clockwise arc is [-30, 0, 0]. Counterclockwise ellipse arcs and circular arcs either way read in path order.',
     },
     // -----------------------------------------------------------------------
     // projection.test.ts — brepkit HLR (projectEdges) is partial
@@ -285,37 +296,36 @@ export const divergences: DivergenceMap = {
     'modifierFns.variableFilletRadius': {
       kind: 'not-implemented',
       reason:
-        'brepkit variable fillet produces vol > 1000 (physically impossible -- fillet removes material)',
+        'brepkit has no variable-radius fillet: brepkit-wasm filletVariable builds no rolling-ball blend (a radius running 2 to 5 along a 40 mm box edge removes 260 mm3 where the blend removes about 113, and a constant law of 3 removes the 180 of a flat chamfer), so a radius that varies along an edge returns UNSUPPORTED_CAPABILITY. brepkit also rejects a radius that runs to 0 ("fillet radius must be positive at all points").',
     },
     'modifierFns.variableFilletCallback': {
       kind: 'not-implemented',
-      reason:
-        'brepkit variable fillet produces vol > 1000 (physically impossible -- fillet removes material)',
+      reason: 'Same as modifierFns.variableFilletRadius, for a callback that returns [r1, r2].',
     },
     'modifierFns.perEdgeValues': {
       kind: 'not-implemented',
       reason:
-        'brepkit misplaces per-edge fillet radii: four box edges at radii 1, 1, 3, 3 read 938.03 mm3 against the exact 957.08. Asymmetric chamfers return UNSUPPORTED_CAPABILITY (see modifierFns.asymmetricChamfer).',
-    },
-    'modifierFns.asymmetricChamfer': {
-      kind: 'not-implemented',
-      reason:
-        'brepkit has no asymmetric chamfer (brepkit-wasm lacks chamferAsymmetric): a [d1, d2] chamfer, or a callback that returns one for an edge, throws UnsupportedKernelOperationError and chamfer returns UNSUPPORTED_CAPABILITY rather than a symmetric chamfer at the average of d1 and d2.',
-    },
-    'chamferAngle.distAngle': {
-      kind: 'not-implemented',
-      reason:
-        'brepkit has no distance-angle chamfer (brepkit-wasm lacks chamferAsymmetric): chamferDistAngle throws UnsupportedKernelOperationError, so chamferDistAngleShape and chamfer with { distance, angle } return UNSUPPORTED_CAPABILITY rather than a symmetric chamfer at the average of the two setbacks.',
-    },
-    'chamferAngle.exactVolume': {
-      kind: 'not-implemented',
-      reason:
-        'Same as chamferAngle.distAngle: brepkit returns UNSUPPORTED_CAPABILITY for any distance-angle chamfer.',
+        "brepkit takes one fillet radius per call, so different radii on different edges return UNSUPPORTED_CAPABILITY (a second call on the first one's result leaves the input solid corrupt), and a radius that varies along an edge is unsupported (see modifierFns.variableFilletRadius).",
     },
     'chamferAngle.perEdge': {
       kind: 'not-implemented',
       reason:
-        'Same as chamferAngle.distAngle: brepkit returns UNSUPPORTED_CAPABILITY for any distance-angle chamfer, one value for every edge or one per edge.',
+        'brepkit has no per-edge distance-angle chamfer (no chamferDistAngles): chamfer returns UNSUPPORTED_CAPABILITY unless every edge takes the same { distance, angle }.',
+    },
+    'modifierFns.perEdgeChamfers': {
+      kind: 'not-implemented',
+      reason:
+        'brepkit takes one chamfer setback per call, so different distances on different edges return UNSUPPORTED_CAPABILITY: a second call on the first one\'s result cannot name the input\'s other edges ("no manifold edges to chamfer").',
+    },
+    'chamferAngle.meetingEdges': {
+      kind: 'not-implemented',
+      reason:
+        'brepkit two-distance and distance-angle chamfers fail where chamfered edges meet at a vertex ("blend: trimming failure on face"): four bottom edges of a 10 mm cube at 1 mm / 30 degrees, or two adjacent edges at [1, 2]. The same edges take a symmetric chamfer, and edges that share no vertex are cut exactly.',
+    },
+    'chamferAngle.faceHistory': {
+      kind: 'not-implemented',
+      reason:
+        'brepkit reports no face history for a distance-angle chamfer (no chamferDistAnglesWithHistory), so only face origins carry over to the result: face tags and colors are lost.',
     },
     'draftFns.perFaceAngles': {
       kind: 'not-implemented',
@@ -332,6 +342,11 @@ export const divergences: DivergenceMap = {
     'exporterFns.assemblyUnits': {
       kind: 'not-implemented',
       reason: 'brepkit writes STEP in millimeters whatever unit or modelUnit asks for.',
+    },
+    'exporterFns.partNames': {
+      kind: 'not-implemented',
+      reason:
+        "brepkit writes named parts (exportAssemblySTEP, exportSTEPConfigured) as plain STEP: every part goes under one product named 'brepkit_solid', without its name or color.",
     },
     'modifierFns.nullShapeValidation': {
       kind: 'not-implemented',
@@ -456,7 +471,12 @@ export const divergences: DivergenceMap = {
     'extrudeFns.complexExtrudeLaw': {
       kind: 'not-implemented',
       reason:
-        'brepkit has no scaling-law sweep: complexExtrude returns the unscaled prism (785.40 for a radius-5 circle over 10) whatever endFactor asks for, where the B-rep kernels sweep the frustum.',
+        'brepkit has no scaling-law sweep: the adapter throws UnsupportedKernelOperationError for a law, so complexExtrude and a profiled sketch extrude return UNSUPPORTED_CAPABILITY. brepkit-wasm sweepWithOptions takes a scale law, but a circle of radius 10 scaled to 0.5 over 40 sweeps 94 flat faces measuring 7239.547 mm3 where the frustum is 7330.383.',
+    },
+    'extrudeFns.twistExtrude': {
+      kind: 'not-implemented',
+      reason:
+        'brepkit has no twisted sweep: brepkit-wasm sweepWithOptions takes no auxiliary spine (the Rust SweepOptions has aux_spine, the binding does not pass one), so the adapter throws UnsupportedKernelOperationError and twistExtrude returns UNSUPPORTED_CAPABILITY instead of an untwisted prism.',
     },
     'extrudeFns.circleExtrude': {
       kind: 'not-implemented',
@@ -515,7 +535,8 @@ export const divergences: DivergenceMap = {
     // -----------------------------------------------------------------------
     variableFillet: {
       kind: 'not-implemented',
-      reason: 'OCCT-specific variable fillet via kernel API not available in brepkit',
+      reason:
+        'The kernel fillet with [r1, r2] throws UnsupportedKernelOperationError on brepkit (see modifierFns.variableFilletRadius).',
     },
     multiSweepFns: {
       kind: 'not-implemented',
@@ -523,7 +544,8 @@ export const divergences: DivergenceMap = {
     },
     guidedSweepFns: {
       kind: 'not-implemented',
-      reason: 'Guided sweep (auxiliary spine) not implemented in brepkit kernel',
+      reason:
+        'brepkit-wasm sweeps take no auxiliary spine, so a guided sweep throws UnsupportedKernelOperationError and guidedSweep returns GUIDED_SWEEP_FAILED.',
     },
     interferenceFns: {
       kind: 'not-implemented',
@@ -561,10 +583,23 @@ export const divergences: DivergenceMap = {
       kind: 'not-implemented',
       reason: 'Null-shape pre-validation tests use OCCT-specific raw API',
     },
+    'measureFns.faceDistance': {
+      kind: 'not-implemented',
+      reason:
+        'brepkit-wasm measures distance from a point to a solid, face or edge, and between two solids, and nothing else: a face, edge or solid against a face or edge returns UNSUPPORTED_CAPABILITY.',
+    },
     'principalBoxFns.inertia': {
       kind: 'not-implemented',
       reason:
         'brepkit-wasm exposes no matrix-of-inertia query, so the adapter has no inertia() and principalBoundingBox returns UNSUPPORTED.',
+    },
+    // -----------------------------------------------------------------------
+    // threemfImport.test.ts
+    // -----------------------------------------------------------------------
+    'threemfImport.bodiesWithinObject': {
+      kind: 'not-implemented',
+      reason:
+        'brepkit has no sewKeepsOrientation capability, so a 3MF object goes through its native indexed buildSolidFromFaces, which returns one solid for all the bodies in the object (two cubes become one solid; a cube beside a sheet, one 1016.7 mm3 solid) rather than a solid per closed body.',
     },
   },
 
@@ -595,6 +630,11 @@ export const divergences: DivergenceMap = {
       reason:
         'The deprecated opencascade.js adapter has no per-edge distance-angle chamfer (no chamferDistAngles): chamfer returns UNSUPPORTED_CAPABILITY unless every edge takes the same { distance, angle }.',
     },
+    'chamferAngle.faceHistory': {
+      kind: 'not-implemented',
+      reason:
+        'The deprecated opencascade.js adapter reports no face history for a distance-angle chamfer (no chamferDistAnglesWithHistory), so only face origins carry over, matched by hash and geometry; face tags and colors are lost.',
+    },
     'stepConfigFns.units': {
       kind: 'not-implemented',
       reason:
@@ -617,6 +657,11 @@ export const divergences: DivergenceMap = {
       kind: 'not-implemented',
       reason:
         'occt (OpenCascade.js) StlAPI_Reader.Read returns no shape, so importSTL yields Err; occt-wasm 3.4.0 and brepkit import STL correctly',
+    },
+    'meshFns.igesExport': {
+      kind: 'not-implemented',
+      reason:
+        'This opencascade.js build has no IGESControl_Writer, so exportIGES returns IGES_EXPORT_FAILED.',
     },
     'principalBoxFns.inertia': {
       kind: 'not-implemented',
@@ -718,6 +763,11 @@ export const divergences: DivergenceMap = {
     'meshFns.stepReadError': {
       kind: 'not-implemented',
       reason: 'Patches oc.FS.readFile — OCCT Emscripten FS API not exposed by occt-wasm',
+    },
+    'meshFns.igesExport': {
+      kind: 'not-implemented',
+      reason:
+        'occt-wasm is built without an IGES translator: exportIGES returns UNSUPPORTED_CAPABILITY.',
     },
     'meshFns.meshDeflection': {
       kind: 'not-implemented',

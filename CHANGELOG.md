@@ -1,5 +1,54 @@
 # Changelog
 
+## [20.13.4](https://github.com/andymai/brepjs/compare/brepjs-v20.13.3...brepjs-v20.13.4) (2026-10-30)
+
+
+### Bug Fixes
+
+* **brepkit:** bound curved faces by their surface, not only their edges ([#2568](https://github.com/andymai/brepjs/issues/2568)) ([31fea5c](https://github.com/andymai/brepjs/commit/31fea5ccd4473acda346de08df0003ef0d751f9e))
+
+## [20.13.3](https://github.com/andymai/brepjs/compare/brepjs-v20.13.2...brepjs-v20.13.3) (2026-10-30)
+
+
+### Bug Fixes
+
+* **types:** export ChamferDistAngleEdge and regenerate the playground types ([#2565](https://github.com/andymai/brepjs/issues/2565)) ([544cc7f](https://github.com/andymai/brepjs/commit/544cc7f04f9524bb1f05cbf189b19da60bbf3f22))
+
+## [20.13.2](https://github.com/andymai/brepjs/compare/brepjs-v20.13.1...brepjs-v20.13.2) (2026-10-30)
+
+
+### Bug Fixes
+
+* **brepkit:** build the right shape or return unsupported where brepkit was silently wrong ([#2563](https://github.com/andymai/brepjs/issues/2563)) ([d4069b4](https://github.com/andymai/brepjs/commit/d4069b456391431fcd991556781961a98067febb))
+
+## [20.13.1](https://github.com/andymai/brepjs/compare/brepjs-v20.13.0...brepjs-v20.13.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **io:** keep every part of a model through STEP, IGES, and STL ([#2560](https://github.com/andymai/brepjs/issues/2560)) ([b0beb86](https://github.com/andymai/brepjs/commit/b0beb86e1015198f79e1bf042b5d9df46cc07811))
+
+## [20.13.0](https://github.com/andymai/brepjs/compare/brepjs-v20.12.15...brepjs-v20.13.0) (2026-10-30)
+
+
+### Features
+
+* **topology:** measure chamfers from a given face and keep their face history ([#2558](https://github.com/andymai/brepjs/issues/2558)) ([b084da9](https://github.com/andymai/brepjs/commit/b084da9be990573575f8f64a58941370be59c057))
+
+## [20.12.15](https://github.com/andymai/brepjs/compare/brepjs-v20.12.14...brepjs-v20.12.15) (2026-10-30)
+
+
+### Bug Fixes
+
+* **types:** match public types to runtime and align kernel rotation units ([#2556](https://github.com/andymai/brepjs/issues/2556)) ([92e929c](https://github.com/andymai/brepjs/commit/92e929c52e59df887abde917f7cee74339dddd85))
+
+## [20.12.14](https://github.com/andymai/brepjs/compare/brepjs-v20.12.13...brepjs-v20.12.14) (2026-10-30)
+
+
+### Performance Improvements
+
+* **io:** skip orientation repair for consistently wound meshes ([#2553](https://github.com/andymai/brepjs/issues/2553)) ([d59727f](https://github.com/andymai/brepjs/commit/d59727fe70d983b00545771bc357e5fbdf74f3ee))
+
 ## [20.12.13](https://github.com/andymai/brepjs/compare/brepjs-v20.12.12...brepjs-v20.12.13) (2026-10-30)
 
 

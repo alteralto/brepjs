@@ -72,9 +72,10 @@ import {
   sketchCircle,
   getFaces,
   getKernel,
+  getSolids,
 } from '@/index.js';
+import type { Shape3D } from '@/index.js';
 import { faceGeomType } from '@/topology/faceFns.js';
-import { skipIfDiverges } from './helpers/kernelDivergences.js';
 
 beforeAll(async () => {
   await initKernel();
@@ -446,8 +447,7 @@ describe('chamfer()', () => {
     expect(isValid(unwrap(result))).toBe(true);
   });
 
-  it('chamfers with distance-angle mode', (ctx) => {
-    skipIfDiverges(ctx, 'chamferAngle.distAngle');
+  it('chamfers with distance-angle mode', () => {
     const b = box(20, 20, 20);
     const result = chamfer(b, (e) => e.inDirection('Z'), { distance: 2, angle: 45 });
     expect(isOk(result)).toBe(true);
@@ -632,6 +632,16 @@ describe('toBREP() / fromBREP()', () => {
     expect(brep).toBeTruthy();
     const result = fromBREP(brep);
     expect(isOk(result)).toBe(true);
+  });
+
+  it('round-trips every solid of a compound', () => {
+    using first = box(10, 10, 10);
+    using unplaced = box(5, 5, 5);
+    using second = translate(unplaced, [30, 0, 0]);
+    using both = compound([first, second]);
+    using restored = unwrap(fromBREP(unwrap(toBREP(both))));
+    expect(getSolids(restored)).toHaveLength(2);
+    expect(unwrap(measureVolume(restored as Shape3D))).toBeCloseTo(1125, 3);
   });
 });
 

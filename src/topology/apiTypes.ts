@@ -43,9 +43,12 @@ export type FinderFn<T extends AnyShape<Dimension>> = (finder: FinderFor<T>) => 
  * - `number` — constant radius on all selected edges
  * - `[number, number]` — variable radius (start, end)
  * - callback — per-edge radius; return `null` to skip an edge
+ *
+ * brepkit builds one constant radius per call: a radius that varies, or different
+ * radii on different edges, is an `UNSUPPORTED_CAPABILITY` error there.
  */
 export type FilletRadius =
-  number | [number, number] | ((edge: Edge<Dimension>) => number | [number, number] | null);
+  number | [number, number] | ((edge: Edge) => number | [number, number] | null);
 
 // ---------------------------------------------------------------------------
 // ChamferDistance — all distance modes for chamfer()
@@ -55,23 +58,36 @@ export type FilletRadius =
  * Chamfer distance specification.
  *
  * - `number` — equal distance
- * - `[number, number]` — asymmetric distances (dist1, dist2). brepkit has no asymmetric
- *   chamfer and returns an `UNSUPPORTED_CAPABILITY` error for two different distances.
+ * - `[number, number]` — asymmetric distances (dist1, dist2). The kernel picks which of the
+ *   edge's two faces takes dist1, and kernels can pick differently: occt-wasm and brepkit
+ *   set a box edge's dist1 back on opposite faces.
  * - `{ distance, angle }` — distance-angle mode (replaces chamferDistAngleShape); angle in degrees.
- *   brepkit has no distance-angle chamfer and returns an `UNSUPPORTED_CAPABILITY` error.
+ *   The kernel picks the face the distance runs along, as for dist1.
  * - callback — per-edge value of any of the above; return `null` (or a non-positive
  *   distance) to skip an edge. The edges it keeps must all get plain distances or all
  *   get `{ distance, angle }`: mixing the two is an `INVALID_CHAMFER_DISTANCE` error.
  *   Different `{ distance, angle }` values per edge need a kernel that chamfers each
  *   edge by its own (occt-wasm 5.9.0+); elsewhere they are an `UNSUPPORTED_CAPABILITY` error.
+ *   A callback's `{ distance, angle, face }` measures that edge's chamfer from `face`,
+ *   which must be one of the two faces the edge joins (else `CHAMFER_ANGLE_FACE_NOT_ADJACENT`):
+ *   the distance is set back on it and the angle taken from it. Without `face` the
+ *   kernel picks it (the edge's first adjacent face on occt-wasm). A `face` needs the
+ *   same per-edge kernel support. Edges of one tangent-continuous chain are chamfered
+ *   as one, so they must state the same chamfer; occt-wasm 5.11.0+ also matches one
+ *   stated from the face on the other side (e.g. `{ distance: d, angle: 45 }` from
+ *   either face of a square edge).
  */
 export type ChamferDistance =
   | number
   | [number, number]
   | { distance: number; angle: number }
   | ((
-      edge: Edge<Dimension>
-    ) => number | [number, number] | { distance: number; angle: number } | null);
+      edge: Edge
+    ) =>
+      | number
+      | [number, number]
+      | { distance: number; angle: number; face?: Face | undefined }
+      | null);
 
 // ---------------------------------------------------------------------------
 // DraftAngle — angle specification for draft()
@@ -83,7 +99,7 @@ export type ChamferDistance =
  * - `number` — constant angle in degrees for all selected faces
  * - callback — per-face angle; return `null` to skip a face
  */
-export type DraftAngle = number | ((face: Face<Dimension>) => number | null);
+export type DraftAngle = number | ((face: Face) => number | null);
 
 /** Options for the draft() modifier. */
 export interface DraftOptions {
