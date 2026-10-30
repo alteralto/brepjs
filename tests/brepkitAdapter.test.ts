@@ -817,32 +817,8 @@ describe('BrepkitAdapter', () => {
       );
     });
 
-    it('an asymmetric chamfer is unsupported without chamferAsymmetric', () => {
-      const mock = createMockBrepKernel();
-      const adapter = new BrepkitAdapter(mock);
-      const box = adapter.makeBox(2, 2, 2);
-      const edges = adapter.iterShapes(box, 'edge');
-      const near = edges[0];
-
-      for (const distance of [
-        [0.2, 0.4] as [number, number],
-        // A symmetric edge first: the check must reject before chamfering any group.
-        (edge: unknown): number | [number, number] => (edge === near ? 0.3 : [0.2, 0.4]),
-      ]) {
-        let caught: unknown;
-        try {
-          adapter.chamfer(box, edges, distance);
-        } catch (e) {
-          caught = e;
-        }
-        expect(isUnsupportedKernelOperationError(caught)).toBe(true);
-      }
-      // The callback is checked before any group is chamfered.
-      expect(mock.chamfer).not.toHaveBeenCalled();
-    });
-
-    it('chamfers two equal distances symmetrically without chamferAsymmetric', () => {
-      const mock = createMockBrepKernel();
+    it('chamfers two equal distances symmetrically', () => {
+      const mock = { ...createMockBrepKernel(), chamferV2: vi.fn(() => 99) };
       const adapter = new BrepkitAdapter(mock);
       const box = adapter.makeBox(2, 2, 2);
       const edges = adapter.iterShapes(box, 'edge');
@@ -852,57 +828,52 @@ describe('BrepkitAdapter', () => {
       expect(mock.chamfer).toHaveBeenCalledTimes(2);
       const calls: unknown[][] = mock.chamfer.mock.calls;
       for (const call of calls) expect(call[2]).toBe(0.3);
+      expect(mock.chamferV2).not.toHaveBeenCalled();
     });
 
-    it('delegates asymmetric distances to chamferAsymmetric', () => {
-      const mock = { ...createMockBrepKernel(), chamferAsymmetric: vi.fn(() => 99) };
+    it('delegates two different distances to chamferV2', () => {
+      const mock = { ...createMockBrepKernel(), chamferV2: vi.fn(() => 99) };
       const adapter = new BrepkitAdapter(mock);
       const box = adapter.makeBox(2, 2, 2);
       const edges = adapter.iterShapes(box, 'edge');
       const near = edges[0];
       adapter.chamfer(box, edges, [0.2, 0.4]);
-      adapter.chamfer(box, edges, (edge) => (edge === near ? [0.2, 0.4] : 0.3));
+      adapter.chamfer(box, edges, () => [0.2, 0.4]);
 
-      expect(mock.chamferAsymmetric).toHaveBeenNthCalledWith(
+      expect(mock.chamferV2).toHaveBeenNthCalledWith(
         1,
         (box as BrepkitHandle).id,
         edges.map((e) => (e as BrepkitHandle).id),
         0.2,
         0.4
       );
-      expect(mock.chamferAsymmetric).toHaveBeenCalledTimes(2);
-      expect(mock.chamfer).toHaveBeenCalledOnce();
-    });
-
-    it('chamferDistAngle is unsupported without chamferAsymmetric', () => {
-      const mock = createMockBrepKernel();
-      const adapter = new BrepkitAdapter(mock);
-      const box = adapter.makeBox(2, 2, 2);
-      const edges = adapter.iterShapes(box, 'edge');
+      expect(mock.chamferV2).toHaveBeenCalledTimes(2);
 
       let caught: unknown;
       try {
-        adapter.chamferDistAngle(box, edges, 0.3, 30);
+        adapter.chamfer(box, edges, (edge) => (edge === near ? [0.2, 0.4] : 0.3));
       } catch (e) {
         caught = e;
       }
       expect(isUnsupportedKernelOperationError(caught)).toBe(true);
+      expect(mock.chamferV2).toHaveBeenCalledTimes(2);
       expect(mock.chamfer).not.toHaveBeenCalled();
     });
 
-    it('chamferDistAngle sets the second distance back by distance x tan(angle)', () => {
-      const mock = { ...createMockBrepKernel(), chamferAsymmetric: vi.fn(() => 99) };
+    it('chamferDistAngle delegates to chamferDistanceAngle with the angle in radians', () => {
+      const mock = { ...createMockBrepKernel(), chamferDistanceAngle: vi.fn(() => 99) };
       const adapter = new BrepkitAdapter(mock);
       const box = adapter.makeBox(2, 2, 2);
       const edges = adapter.iterShapes(box, 'edge');
       adapter.chamferDistAngle(box, edges, 0.3, 45);
 
-      expect(mock.chamferAsymmetric).toHaveBeenCalledWith(
+      expect(mock.chamferDistanceAngle).toHaveBeenCalledWith(
         (box as BrepkitHandle).id,
         edges.map((e) => (e as BrepkitHandle).id),
         0.3,
-        expect.closeTo(0.3, 12)
+        expect.closeTo(Math.PI / 4, 12)
       );
+      expect(mock.chamfer).not.toHaveBeenCalled();
     });
 
     it('shell delegates face handles', () => {
@@ -1461,33 +1432,88 @@ describe('BrepkitAdapter', () => {
   });
 
   describe('fillet (variable radius)', () => {
-    it('calls filletVariable with array-tuple radius', () => {
+    it('refuses a radius that varies along an edge before filleting anything', () => {
       const mock = createMockBrepKernel();
       const adapter = new BrepkitAdapter(mock);
 
       const solid = adapter.makeBox(10, 10, 10);
       const edges = (adapter.iterShapes(solid, 'edge') as BrepkitHandle[]).slice(0, 2);
-      adapter.fillet(solid, edges, [1, 3]);
-
-      expect(mock.filletVariable).toHaveBeenCalledOnce();
-      const spec = JSON.parse(mock.filletVariable.mock.calls[0]?.[1] as string);
-      expect(spec).toHaveLength(2);
-      expect(spec[0]).toEqual(expect.objectContaining({ startRadius: 1, endRadius: 3 }));
-      expect(spec[1]).toEqual(expect.objectContaining({ startRadius: 1, endRadius: 3 }));
+      const near = edges[0];
+      for (const radius of [
+        [1, 3] as [number, number],
+        // A constant edge first: the check must reject before filleting any group.
+        (edge: unknown): number | [number, number] => (edge === near ? 2 : [2, 4]),
+      ]) {
+        let caught: unknown;
+        try {
+          adapter.fillet(solid, edges, radius);
+        } catch (e) {
+          caught = e;
+        }
+        expect(isUnsupportedKernelOperationError(caught)).toBe(true);
+      }
+      expect(mock.fillet).not.toHaveBeenCalled();
+      expect(mock.filletVariable).not.toHaveBeenCalled();
     });
 
-    it('calls filletVariable with per-edge function', () => {
+    it('fillets one constant radius for every edge with fillet', () => {
       const mock = createMockBrepKernel();
       const adapter = new BrepkitAdapter(mock);
 
       const solid = adapter.makeBox(10, 10, 10);
-      const edges = (adapter.iterShapes(solid, 'edge') as BrepkitHandle[]).slice(0, 1);
-      adapter.fillet(solid, edges, () => [2, 4]);
+      const edges = (adapter.iterShapes(solid, 'edge') as BrepkitHandle[]).slice(0, 2);
+      const near = edges[0];
+      adapter.fillet(solid, edges, [3, 3]);
+      adapter.fillet(solid, edges, () => [2, 2]);
 
-      expect(mock.filletVariable).toHaveBeenCalledOnce();
-      const spec = JSON.parse(mock.filletVariable.mock.calls[0]?.[1] as string);
-      expect(spec).toHaveLength(1);
-      expect(spec[0]).toEqual(expect.objectContaining({ startRadius: 2, endRadius: 4 }));
+      const calls: unknown[][] = mock.fillet.mock.calls;
+      expect(calls.map((call) => call[2])).toEqual([3, 2]);
+
+      let caught: unknown;
+      try {
+        adapter.fillet(solid, edges, (edge) => (edge === near ? 1 : 2));
+      } catch (e) {
+        caught = e;
+      }
+      expect(isUnsupportedKernelOperationError(caught)).toBe(true);
+      expect(mock.fillet).toHaveBeenCalledTimes(2);
+      expect(mock.filletVariable).not.toHaveBeenCalled();
+    });
+
+    it('filletVariable fillets a constant profile on the edge its hash names', () => {
+      const mock = createMockBrepKernel();
+      const adapter = new BrepkitAdapter(mock);
+      const solid = adapter.makeBox(10, 10, 10);
+
+      adapter.filletVariable(
+        solid,
+        JSON.stringify({
+          edge: 201,
+          radii: [
+            { param: 0, radius: 2 },
+            { param: 1, radius: 2 },
+          ],
+        })
+      );
+      expect(mock.fillet).toHaveBeenCalledWith((solid as BrepkitHandle).id, [201], 2);
+
+      let caught: unknown;
+      try {
+        adapter.filletVariable(
+          solid,
+          JSON.stringify({
+            edge: 201,
+            radii: [
+              { param: 0, radius: 2 },
+              { param: 1, radius: 5 },
+            ],
+          })
+        );
+      } catch (e) {
+        caught = e;
+      }
+      expect(isUnsupportedKernelOperationError(caught)).toBe(true);
+      expect(mock.filletVariable).not.toHaveBeenCalled();
     });
 
     it('uses fast path for constant radius', () => {

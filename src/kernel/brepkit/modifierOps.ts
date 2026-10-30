@@ -33,29 +33,102 @@ export function fillet(
     return solidHandle(bk.fillet(solidId, edgeIds, radius));
   }
 
-  const spec: { edge: number; startRadius: number; endRadius: number }[] = [];
-  for (const [i, edge] of edges.entries()) {
-    const edgeId = edgeIds[i] ?? 0;
-    let r: number | [number, number];
-    if (typeof radius === 'function') {
-      r = radius(edge);
-    } else {
-      r = radius;
-    }
-    const [startR, endR] = Array.isArray(r) ? r : [r, r];
-    spec.push({ edge: edgeId, startRadius: startR, endRadius: endR });
+  const radii = new Set<number>();
+  for (const edge of edges) {
+    const r = typeof radius === 'function' ? radius(edge) : radius;
+    const [start, end] = Array.isArray(r) ? r : [r, r];
+    if (start !== end) throw varyingFilletUnsupported();
+    radii.add(start);
   }
-  return solidHandle(bk.filletVariable(solidId, JSON.stringify(spec)));
+  if (radii.size > 1) throw perEdgeUnsupported('fillet radii');
+  const [only] = radii;
+  if (only === undefined) throw new Error('brepkit: fillet needs at least one edge');
+  return solidHandle(bk.fillet(solidId, edgeIds, only));
 }
 
-/** brepkit's two-distance chamfer, bound to `bk`; throws on builds without it. */
-function requireChamferAsymmetric(bk: BrepkitKernel, what: string) {
-  if (typeof bk.chamferAsymmetric !== 'function') {
-    throw new UnsupportedKernelOperationError(
-      `brepkit: ${what} requires chamferAsymmetric, which this brepkit-wasm build lacks`
-    );
+/**
+ * brepkit takes one value for every edge of a fillet or chamfer call, and a
+ * second call on the first one's result cannot name the input's other edges:
+ * a chamfer fails on them ("no manifold edges to chamfer"), and a fillet builds
+ * the right body but leaves the input solid corrupt, so that filleting the
+ * input's four vertical cube edges at 2 mm afterwards cuts a flat chamfer.
+ */
+function perEdgeUnsupported(what: string): UnsupportedKernelOperationError {
+  return new UnsupportedKernelOperationError(
+    `brepkit: different ${what} on different edges in one call is not supported`
+  );
+}
+
+/**
+ * brepkit-wasm's filletVariable does not build a rolling-ball blend: on the
+ * 40 mm top edge of a 40 x 30 x 20 box, a radius running 2 to 5 removes 260 mm3
+ * where the blend removes about 113, and even a constant law of 3 removes 180
+ * (the flat chamfer) where fillet removes 77.26. A radius that varies along an
+ * edge is refused rather than built that way.
+ */
+function varyingFilletUnsupported(): UnsupportedKernelOperationError {
+  return new UnsupportedKernelOperationError(
+    'brepkit: a fillet radius that varies along an edge is not supported'
+  );
+}
+
+/** occt's hashCode upper bound, which the kernel-agnostic filletVariable spec hashes edges with. */
+const HASH_UPPER_BOUND = 2147483647;
+
+interface VariableFilletSpec {
+  readonly edge?: number;
+  readonly radii?: ReadonlyArray<{ readonly param: number; readonly radius: number }>;
+  readonly edgeId?: number;
+  readonly startRadius?: number;
+  readonly endRadius?: number;
+}
+
+/**
+ * A variable fillet spec on one edge: `{ edge: hashCode, radii: [{ param, radius }] }`
+ * from variableFillet, or `{ edgeId, startRadius, endRadius }`. A constant radius is
+ * an ordinary fillet; a radius that varies is unsupported (see
+ * {@link varyingFilletUnsupported}).
+ */
+export function filletVariable(bk: BrepkitKernel, shape: KernelShape, spec: string): KernelShape {
+  const solidId = unwrapSolidOrThrow(shape, 'filletVariable');
+  const parsed = JSON.parse(spec) as VariableFilletSpec;
+  let edgeId: number | undefined;
+  let radii: number[];
+  if (parsed.edge !== undefined && parsed.radii !== undefined && parsed.radii.length > 0) {
+    const hash = parsed.edge;
+    edgeId = toArray(bk.getSolidEdges(solidId)).find((id) => id % HASH_UPPER_BOUND === hash);
+    radii = parsed.radii.map((r) => r.radius);
+  } else if (
+    parsed.edgeId !== undefined &&
+    parsed.startRadius !== undefined &&
+    parsed.endRadius !== undefined
+  ) {
+    edgeId = parsed.edgeId;
+    radii = [parsed.startRadius, parsed.endRadius];
+  } else {
+    throw new UnsupportedKernelOperationError('brepkit: filletVariable: unrecognized spec');
   }
-  return bk.chamferAsymmetric.bind(bk);
+  if (edgeId === undefined) {
+    throw new Error('brepkit: filletVariable: the edge is not an edge of the shape');
+  }
+  const [first = 0] = radii;
+  if (radii.some((r) => r !== first)) throw varyingFilletUnsupported();
+  return solidHandle(bk.fillet(solidId, [edgeId], first));
+}
+
+/**
+ * A symmetric chamfer for two equal distances, brepkit's two-distance chamfer
+ * otherwise. brepkit sets `d1` back on the edge's first face in its own face
+ * order, which need not be the face occt-wasm picks for the same edge.
+ */
+function chamferTwoDistances(
+  bk: BrepkitKernel,
+  solidId: number,
+  edgeIds: number[],
+  d1: number,
+  d2: number
+): number {
+  return d1 === d2 ? bk.chamfer(solidId, edgeIds, d1) : bk.chamferV2(solidId, edgeIds, d1, d2);
 }
 
 export function chamfer(
@@ -72,43 +145,25 @@ export function chamfer(
   }
 
   if (Array.isArray(distance)) {
-    const [d1, d2] = distance;
-    if (d1 === d2) return solidHandle(bk.chamfer(solidId, edgeIds, d1));
-    const asymmetric = requireChamferAsymmetric(bk, 'an asymmetric chamfer');
-    return solidHandle(asymmetric(solidId, edgeIds, d1, d2));
+    return solidHandle(chamferTwoDistances(bk, solidId, edgeIds, distance[0], distance[1]));
   }
 
-  // Callback mode: group edges by distance to batch atomically
-  // (avoids stale edge IDs from iterating one-by-one across topology changes)
-  const groups = new Map<string, { ids: number[]; d1: number; d2: number }>();
-  for (const [i, edge] of edges.entries()) {
+  const pairs = new Map<string, [number, number]>();
+  for (const edge of edges) {
     const r = distance(edge);
-    const eid = edgeIds[i];
-    if (eid === undefined) continue;
     const [d1, d2] = Array.isArray(r) ? r : [r, r];
-    const key = `${d1},${d2}`;
-    const group = groups.get(key);
-    if (group) {
-      group.ids.push(eid);
-    } else {
-      groups.set(key, { ids: [eid], d1, d2 });
-    }
+    pairs.set(`${d1},${d2}`, [d1, d2]);
   }
-
-  // Checked before any group is chamfered, so an unsupported group builds nothing.
-  const asymmetric = [...groups.values()].some((g) => g.d1 !== g.d2)
-    ? requireChamferAsymmetric(bk, 'an asymmetric chamfer')
-    : undefined;
-  let result = solidId;
-  for (const group of groups.values()) {
-    result =
-      asymmetric && group.d1 !== group.d2
-        ? asymmetric(result, group.ids, group.d1, group.d2)
-        : bk.chamfer(result, group.ids, group.d1);
-  }
-  return solidHandle(result);
+  if (pairs.size > 1) throw perEdgeUnsupported('chamfer distances');
+  const [only] = pairs.values();
+  if (only === undefined) throw new Error('brepkit: chamfer needs at least one edge');
+  return solidHandle(chamferTwoDistances(bk, solidId, edgeIds, only[0], only[1]));
 }
 
+/**
+ * brepkit sets `distance` back on the edge's first face in its own face order
+ * and the other face back by distance·tan(angle).
+ */
 export function chamferDistAngle(
   bk: BrepkitKernel,
   shape: KernelShape,
@@ -116,11 +171,11 @@ export function chamferDistAngle(
   distance: number,
   angleDeg: number
 ): KernelShape {
-  const asymmetric = requireChamferAsymmetric(bk, 'chamferDistAngle');
-  const d2 = distance * Math.tan((angleDeg * Math.PI) / 180);
   const solidId = unwrapSolidOrThrow(shape, 'chamferDistAngle');
   const edgeIds = edges.map((e) => unwrap(e, 'edge'));
-  return solidHandle(asymmetric(solidId, edgeIds, distance, d2));
+  return solidHandle(
+    bk.chamferDistanceAngle(solidId, edgeIds, distance, (angleDeg * Math.PI) / 180)
+  );
 }
 
 function faceCentroid(
@@ -273,11 +328,6 @@ export function offset(
   }
   const solidId = unwrapSolidOrThrow(shape, 'offset');
   return solidHandle(bk.offsetSolidV2(solidId, distance));
-}
-
-export function filletVariable(bk: BrepkitKernel, shape: KernelShape, spec: string): KernelShape {
-  const solidId = unwrapSolidOrThrow(shape, 'filletVariable');
-  return solidHandle(bk.filletVariable(solidId, spec));
 }
 
 export function draft(

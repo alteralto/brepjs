@@ -336,6 +336,7 @@ Functional API:
 - `sweep(wire, spine, config?, shellMode?): Result<Shape3D | [Shape3D, Wire, Wire]>` — Sweep profile along spine
 - `complexExtrude(wire, center, normal, profileShape?, shellMode?): Result<Shape3D | [Shape3D, Wire, Wire]>`: extrude with scaling profile (the tuple is returned when `shellMode` is true)
 - `twistExtrude(wire, angleDeg, center, normal, profileShape?, shellMode?): Result<Shape3D | [Shape3D, Wire, Wire]>`: twist extrude, `angleDeg` in degrees
+- brepkit has no twisted or scaled sweep: `twistExtrude`, `complexExtrude` with a profile, and `sweep` with an `auxiliarySpine` or `law` return `UNSUPPORTED_CAPABILITY` there
 - `supportExtrude(wire, center, normal, support): Result<Shape3D>` — Extrude constrained to a support surface
 
 `ExtrusionProfile`: `{ profile?: 's-curve' | 'linear', endFactor?: number }` — Controls scaling along extrusion path. `endFactor` 1 = same size, 0.5 = half size at end.
@@ -440,6 +441,8 @@ fillet(shape, radius): Result<Shape3D>             // All edges
 fillet(shape, edges, radius): Result<Shape3D>      // Selected edges
 // edges: Edge[] | FinderFn<Edge> | ShapeFinder<Edge>
 // radius: number | [r1, r2] | (edge => number | [r1, r2] | null)
+// brepkit takes one constant radius per call: [r1, r2] with r1 != r2, or different radii from a callback,
+// return UNSUPPORTED_CAPABILITY there (as do different chamfer distances from a callback).
 
 chamfer(shape, distance): Result<Shape3D>          // All edges
 chamfer(shape, edges, distance): Result<Shape3D>   // Selected edges
@@ -449,7 +452,7 @@ chamfer(shape, edges, distance): Result<Shape3D>   // Selected edges
 // face (one of the two faces the edge joins, e.g. facesOfEdge(shape, edge)[0]) is where distance is set back and angle measured from;
 // it needs the same per-edge support, and a face the edge does not join is CHAMFER_ANGLE_FACE_NOT_ADJACENT.
 // Edges of one tangent-continuous chain must state the same chamfer; occt-wasm 5.11.0+ also accepts it stated from the other face.
-// brepkit has no asymmetric or distance-angle chamfer: [d1, d2] with d1 != d2 and any { distance, angle } return UNSUPPORTED_CAPABILITY there.
+// Without face, which of an edge's faces takes d1 (or the { distance, angle } distance) is up to the kernel; occt-wasm and brepkit pick opposite faces on a box edge.
 
 chamferDistAngleShape(shape, edges, distance, angleDeg): Result<Shape3D>
 ```
@@ -763,6 +766,8 @@ measureSurfaceProps(shape): Result<{ area, mass, centerOfMass }>
 measureLinearProps(shape): Result<{ length, mass, centerOfMass }>
 measureDistance(shape1, shape2): Result<number>
 createDistanceQuery(ref): Result<{ distanceTo(other): Result<number>, dispose(): void }>
+// brepkit measures only from a vertex, or between solids: any other pair (face to face, edge to
+// face, face to solid) returns UNSUPPORTED_CAPABILITY there, as checkInterference does.
 
 // Surface curvature (u, v are raw surface parameters, see uvBounds; not 0-1)
 measureCurvatureAt(face: OrientedFace, u, v): Result<CurvatureResult>  // plain Face: unwrap(orientedFace(f))

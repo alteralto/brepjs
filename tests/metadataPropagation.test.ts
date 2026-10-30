@@ -215,7 +215,6 @@ describe('metadata propagation pipeline', () => {
     }
 
     it('keeps face tags and colors through one { distance, angle }', (ctx) => {
-      skipIfDiverges(ctx, 'chamferAngle.distAngle');
       skipIfDiverges(ctx, 'chamferAngle.faceHistory');
       using b = markedCube();
       using uniform = unwrap(chamfer(b, verticalEdges(b), { distance: 1, angle: 30 }));
