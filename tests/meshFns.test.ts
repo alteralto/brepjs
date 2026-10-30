@@ -17,6 +17,8 @@ import {
   unwrapErr,
   clearMeshCache,
   getKernel,
+  getFaces,
+  getHashCode,
 } from '@/index.js';
 
 describe('meshFns', () => {
@@ -32,6 +34,14 @@ describe('meshFns', () => {
       expect(m.triangles.length).toBeGreaterThan(0);
       expect(m.normals.length).toBeGreaterThan(0);
       expect(m.faceGroups.length).toBe(6); // 6 faces
+    });
+
+    it('labels the triangles of a bare face with that face, so a pick finds it (#2546)', () => {
+      const faces = getFaces(box(10, 10, 10));
+      for (const f of faces) {
+        const m = mesh(f, { cache: false });
+        expect(m.faceGroups.map((g) => g.faceId)).toEqual([getHashCode(f)]);
+      }
     });
 
     it('respects tolerance option', () => {

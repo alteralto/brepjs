@@ -34,7 +34,7 @@ export function mesh(
   if (bkHandle.type === 'solid') {
     result = meshSolid(bk, h, deflection, !!options.includeUVs, angularTol);
   } else if (bkHandle.type === 'face') {
-    result = meshSingleFace(bk, h, deflection, 0, angularTol);
+    result = meshSingleFace(bk, h, deflection, h, angularTol);
   } else if (bkHandle.type === 'compound') {
     result = meshCompound(bk, h, deflection, !!options.includeUVs, angularTol);
   } else {
